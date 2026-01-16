@@ -1,6 +1,0 @@
-v1
-{"path":"file:///app/data/incoming/ecommerce_events_20260116155012008.csv","timestamp":1768578612013,"batchId":353}
-{"path":"file:///app/data/incoming/ecommerce_events_20260116155017134.csv","timestamp":1768578617140,"batchId":353}
-{"path":"file:///app/data/incoming/ecommerce_events_20260116155022310.csv","timestamp":1768578622318,"batchId":353}
-{"path":"file:///app/data/incoming/ecommerce_events_20260116155027471.csv","timestamp":1768578627477,"batchId":353}
-{"path":"file:///app/data/incoming/ecommerce_events_20260116155032603.csv","timestamp":1768578632609,"batchId":353}
