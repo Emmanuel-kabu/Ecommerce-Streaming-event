@@ -1,0 +1,37 @@
+# Security and Environment Files
+.env
+.env.local
+.env.*.local
+.envrc
+.env.example
+
+# project environment
+venv/
+scripts/
+env/
+streaming_env/
+
+
+
+# Logs
+*.log
+logs/
+
+# Database Data
+postgres_data/
+pgadmin_data/
+
+# Docker
+.dockerignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+# Jupyter Notebook
+.ipynb_checkpoints
+# VSCode
+.vscode/    
+
+# data files
+data/incoming/

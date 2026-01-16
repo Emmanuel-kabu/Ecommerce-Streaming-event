@@ -1,0 +1,5 @@
+v1
+{"path":"file:///app/data/incoming/ecommerce_events_20260116154543506.csv","timestamp":1768578343512,"batchId":342}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116154548654.csv","timestamp":1768578348659,"batchId":342}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116154553784.csv","timestamp":1768578353790,"batchId":342}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116154558926.csv","timestamp":1768578358936,"batchId":342}

@@ -1,0 +1,6 @@
+v1
+{"path":"file:///app/data/incoming/ecommerce_events_20260116152840580.csv","timestamp":1768577320590,"batchId":300}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116152845718.csv","timestamp":1768577325723,"batchId":300}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116152850886.csv","timestamp":1768577330892,"batchId":300}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116152856064.csv","timestamp":1768577336070,"batchId":300}
+{"path":"file:///app/data/incoming/ecommerce_events_20260116152901253.csv","timestamp":1768577341264,"batchId":300}

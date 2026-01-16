@@ -1,0 +1,25 @@
+# Core Python packages
+pydantic==2.8.2
+
+# Database Connectivity
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# Big Data Processing
+pyspark==3.5.0
+
+# Data Analysis
+pandas==2.2.2
+numpy==1.26.4
+
+# Data Generation
+Faker==24.4.0
+
+# Additional utilities
+python-dotenv==1.0.1
+requests==2.32.3
+python-multipart==0.0.9
+
+
+# PostgreSQL JDBC driver for Spark (will be downloaded at runtime)
+# org.postgresql:postgresql:42.7.0

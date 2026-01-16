@@ -1,0 +1,123 @@
+services:
+  # PostgreSQL Database
+  postgresql:
+    image: postgres:18.1
+    container_name: ecommerce_postgresql
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - ecommerce_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # pgAdmin for PostgreSQL management (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ecommerce_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "8080:80"
+    networks:
+      - ecommerce_network
+    depends_on:
+      - postgresql
+    restart: unless-stopped
+
+  # Spark Master Node
+  spark-master:
+    image: apache/spark-py:latest
+    container_name: ecommerce_spark_master
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: 0.0.0.0
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+    volumes:
+      - spark_master_data:/opt/spark/data
+    ports:
+      - "7077:7077"  # Spark Master port
+      - "8081:8080"  # Spark Master Web UI
+    networks:
+      - ecommerce_network
+    restart: unless-stopped
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Spark Worker Node
+  spark-worker:
+    image: apache/spark-py:latest
+    container_name: ecommerce_spark_worker
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2g
+    volumes:
+      - spark_worker_data:/opt/spark/data
+    networks:
+      - ecommerce_network
+    depends_on:
+      - spark-master
+    restart: unless-stopped
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+
+  # Spark Structured Streaming Job Container
+  spark-job:
+    build:
+      context: ..   # Project root
+      dockerfile: docker/Dockerfile.python
+    container_name: ecommerce_spark_job
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      SPARK_MASTER_URL: "local[*]"
+      CSV_PATH: ${CSV_PATH}
+      LOG_LEVEL: ${LOG_LEVEL}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ../data:/app/data   # CSV folder for streaming
+    networks:
+      - ecommerce_network
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      spark-worker:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  spark_master_data:
+    driver: local
+  spark_worker_data:
+    driver: local
+
+networks:
+  ecommerce_network:
+    driver: bridge

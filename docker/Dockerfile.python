@@ -1,0 +1,37 @@
+# Dockerfile.spark_job
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    postgresql-client \
+    default-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Java environment for Spark
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+
+# Copy requirements first for caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy Spark job code
+COPY . .
+
+# Create data folder for streaming CSVs
+RUN mkdir -p /app/data
+
+# PostgreSQL JDBC driver (placed where Spark loads jars)
+ENV POSTGRESQL_JDBC_VERSION=42.6.0
+RUN mkdir -p /opt/spark/jars \
+    && curl -fSL "https://repo1.maven.org/maven2/org/postgresql/postgresql/${POSTGRESQL_JDBC_VERSION}/postgresql-${POSTGRESQL_JDBC_VERSION}.jar" -o /opt/spark/jars/postgresql-${POSTGRESQL_JDBC_VERSION}.jar || true
+
+# Default command to run Spark Structured Streaming job
+CMD ["python", "spark_streaming_to_postgres/spark_to_postgres.py"]
