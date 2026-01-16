@@ -35,3 +35,6 @@ __pycache__/
 
 # data files
 data/incoming/
+# Spark Structured Streaming checkpoints (do not track)
+data/checkpoints/
+data/checkpoints/**
