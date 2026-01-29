@@ -2,12 +2,15 @@ import os
 import sys
 import logging
 import traceback
+import platform
 from pathlib import Path
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import psycopg2
+from psycopg2 import sql
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.utils import AnalysisException
 from pyspark.sql.functions import (
     col, to_timestamp, when, regexp_extract, lower, trim,
     isnan, isnull, size, split, count as spark_count,
@@ -18,8 +21,50 @@ from pyspark.sql.types import (
     StringType, IntegerType, DoubleType, TimestampType
 )
 
-# Initialize dotenv
-load_dotenv()
+def _load_env_files() -> None:
+    """Load environment variables from common project .env locations.
+
+    This project commonly stores Docker Compose variables in docker/.env.
+    For local runs, a repo-root .env is also supported.
+    """
+
+    try:
+        repo_root = Path(__file__).resolve().parents[1]
+    except Exception:
+        load_dotenv(override=False)
+        return
+
+    candidates = [
+        repo_root / ".env",
+        repo_root / "docker" / ".env",
+    ]
+
+    loaded_any = False
+    for candidate in candidates:
+        if candidate.exists():
+            load_dotenv(dotenv_path=candidate, override=False)
+            loaded_any = True
+
+    if not loaded_any:
+        load_dotenv(override=False)
+
+
+def _is_windows() -> bool:
+    return os.name == "nt" or platform.system().lower().startswith("win")
+
+
+def _windows_has_winutils() -> bool:
+    hadoop_home = os.getenv("HADOOP_HOME") or os.getenv("hadoop.home.dir")
+    if not hadoop_home:
+        return False
+
+    try:
+        return (Path(hadoop_home) / "bin" / "winutils.exe").exists()
+    except Exception:
+        return False
+
+
+_load_env_files()
 
 def setup_comprehensive_logging(log_level: str = "INFO", log_dir: str = "logs") -> logging.Logger:
     """Setup comprehensive logging with file and console handlers."""
@@ -86,7 +131,7 @@ class EcommerceStreamingJob:
         self.total_batches_processed = 0
         self.total_records_processed = 0
         self.total_records_failed = 0
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
         
         try:
             # Validate and set configuration
@@ -146,6 +191,15 @@ class EcommerceStreamingJob:
             raise ValueError("Spark master URL cannot be empty")
         if not spark_master.startswith(("local", "spark://", "yarn")):
             self.logger.warning(f"Unusual Spark master URL: {spark_master}")
+
+        # Windows requires winutils.exe to avoid SparkContext initialization failures.
+        # Running the driver inside Docker (Linux) also avoids this.
+        if _is_windows() and not _windows_has_winutils():
+            raise EnvironmentError(
+                "Spark on Windows requires Hadoop winutils.exe, but neither HADOOP_HOME nor hadoop.home.dir points to a bin/winutils.exe. "
+                "Recommended: run via Docker Compose (cd docker; docker compose up -d --build). "
+                "If you must run locally on Windows, install winutils.exe and set HADOOP_HOME (or hadoop.home.dir) to that Hadoop home directory."
+            )
         
         # Validate paths
         if not input_path:
@@ -175,7 +229,7 @@ class EcommerceStreamingJob:
         self.logger.info("Creating Spark session...")
         
         try:
-            spark = (
+            builder = (
                 SparkSession.builder
                 .appName("EcommerceStructuredStreaming")
                 .master(self.spark_master)
@@ -183,12 +237,27 @@ class EcommerceStreamingJob:
                 .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
                 .config("spark.sql.streaming.checkpointLocation.fallback", self.checkpoint_path)
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-                # Ensure PostgreSQL JDBC driver is available to Spark
-                .config("spark.jars", "/opt/spark/jars/postgresql-42.6.0.jar")
-                .config("spark.driver.extraClassPath", "/opt/spark/jars/postgresql-42.6.0.jar")
-                .config("spark.executor.extraClassPath", "/opt/spark/jars/postgresql-42.6.0.jar")
-                .getOrCreate()
             )
+
+            # Ensure PostgreSQL JDBC driver is available to Spark.
+            # In Docker images we may have a local jar; in local dev we can fall back to Maven coordinates.
+            jdbc_jar = os.getenv("POSTGRES_JDBC_JAR", "/opt/spark/jars/postgresql-42.6.0.jar")
+            if jdbc_jar and Path(jdbc_jar).exists():
+                builder = (
+                    builder
+                    .config("spark.jars", jdbc_jar)
+                    .config("spark.driver.extraClassPath", jdbc_jar)
+                    .config("spark.executor.extraClassPath", jdbc_jar)
+                )
+                self.logger.info(f"Using PostgreSQL JDBC jar: {jdbc_jar}")
+            else:
+                packages = os.getenv("SPARK_JDBC_PACKAGES", "org.postgresql:postgresql:42.7.0")
+                builder = builder.config("spark.jars.packages", packages)
+                self.logger.warning(
+                    f"PostgreSQL JDBC jar not found at '{jdbc_jar}'. Falling back to spark.jars.packages={packages}"
+                )
+
+            spark = builder.getOrCreate()
             
             # Set log level to reduce noise
             spark.sparkContext.setLogLevel("WARN")
@@ -562,10 +631,14 @@ class EcommerceStreamingJob:
 
     def _write_batch(self, batch_df: DataFrame, batch_id: int):
         """Write each micro-batch to PostgreSQL with comprehensive validation and logging."""
-        batch_start_time = datetime.utcnow()
+        batch_start_time = datetime.now(timezone.utc)
         
         try:
             self.logger.info(f"Processing batch {batch_id}")
+
+            # Drop duplicate event_ids inside the batch early to reduce noise.
+            # NOTE: This does not solve retry/partial-write duplicates; the sink must be idempotent.
+            batch_df = batch_df.dropDuplicates(["event_id"])
             
             # Count records
             record_count = batch_df.count()
@@ -606,7 +679,7 @@ class EcommerceStreamingJob:
             success = self._write_to_postgres_with_retry(batch_df, batch_id)
             
             if success:
-                batch_duration = (datetime.utcnow() - batch_start_time).total_seconds()
+                batch_duration = (datetime.now(timezone.utc) - batch_start_time).total_seconds()
                 self.total_batches_processed += 1
                 self.total_records_processed += record_count
                 
@@ -752,16 +825,25 @@ class EcommerceStreamingJob:
         for attempt in range(max_retries):
             try:
                 self.logger.debug(f"Writing batch {batch_id} to PostgreSQL (attempt {attempt + 1})")
-                
+
+                # JDBC sinks are not exactly-once. If a retry happens after partial inserts,
+                # naive append will hit primary-key conflicts and the whole batch can fail.
+                # To make the write idempotent, write the batch to a staging table and then
+                # merge into the target with ON CONFLICT DO NOTHING.
+                staging_table = self._staging_table_name(batch_id)
+
                 (
                     batch_df.write
                     .jdbc(
                         url=self.db_url,
-                        table=self.db_table,
-                        mode="append",
-                        properties=self.db_properties
+                        table=staging_table,
+                        mode="overwrite",
+                        properties=self.db_properties,
                     )
                 )
+
+                self._merge_staging_into_target(staging_table, batch_df.columns)
+                self._drop_table_if_exists(staging_table)
                 
                 return True
                 
@@ -785,7 +867,7 @@ class EcommerceStreamingJob:
 
     def _log_periodic_statistics(self):
         """Log periodic summary statistics."""
-        runtime = datetime.utcnow() - self.start_time
+        runtime = datetime.now(timezone.utc) - self.start_time
         
         self.logger.info(
             f"=== PERIODIC SUMMARY (Runtime: {runtime}) ==="
@@ -804,6 +886,98 @@ class EcommerceStreamingJob:
             self.logger.info(f"Average records/second: {avg_records_per_sec:.2f}")
         
         self.logger.info("=== END SUMMARY ===")
+
+    def _parse_jdbc_url(self) -> tuple[str, int, str]:
+        """Parse a Postgres JDBC URL like jdbc:postgresql://host:5432/db into components."""
+        if "jdbc:postgresql://" not in (self.db_url or ""):
+            raise ValueError(f"Invalid PostgreSQL JDBC URL: {self.db_url}")
+
+        url_parts = self.db_url.replace("jdbc:postgresql://", "").split("/")
+        if len(url_parts) != 2:
+            raise ValueError(f"Invalid JDBC URL format: {self.db_url}")
+
+        host_port = url_parts[0]
+        database = url_parts[1]
+
+        if ":" not in host_port:
+            raise ValueError(f"Invalid host:port format: {host_port}")
+
+        host, port_str = host_port.split(":", 1)
+        return host, int(port_str), database
+
+    def _split_table_name(self, table: str) -> tuple[str, str]:
+        """Return (schema, table) from possibly schema-qualified input."""
+        if "." in table:
+            schema, tbl = table.split(".", 1)
+            return schema, tbl
+        return "public", table
+
+    def _staging_table_name(self, batch_id: int) -> str:
+        schema, tbl = self._split_table_name(self.db_table)
+        # Keep it deterministic for easy cleanup; include batch_id to avoid collisions.
+        return f"{schema}.{tbl}_staging_{batch_id}"
+
+    def _drop_table_if_exists(self, table: str) -> None:
+        schema, tbl = self._split_table_name(table)
+        host, port, database = self._parse_jdbc_url()
+
+        conn = psycopg2.connect(
+            host=host,
+            port=port,
+            database=database,
+            user=self.db_user,
+            password=self.db_password,
+            connect_timeout=10,
+        )
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("DROP TABLE IF EXISTS {}.{};").format(
+                        sql.Identifier(schema),
+                        sql.Identifier(tbl),
+                    )
+                )
+        finally:
+            conn.close()
+
+    def _merge_staging_into_target(self, staging_table: str, columns: list[str]) -> None:
+        target_schema, target_tbl = self._split_table_name(self.db_table)
+        staging_schema, staging_tbl = self._split_table_name(staging_table)
+        host, port, database = self._parse_jdbc_url()
+
+        # Ensure event_id is part of the merge (required for conflict handling)
+        if "event_id" not in columns:
+            raise ValueError("Cannot merge batch: 'event_id' column missing")
+
+        column_identifiers = [sql.Identifier(c) for c in columns]
+        cols_sql = sql.SQL(", ").join(column_identifiers)
+
+        insert_sql = sql.SQL(
+            "INSERT INTO {target} ({cols}) "
+            "SELECT {cols} FROM {staging} "
+            "ON CONFLICT ({pk}) DO NOTHING;"
+        ).format(
+            target=sql.SQL("{}.{}").format(sql.Identifier(target_schema), sql.Identifier(target_tbl)),
+            staging=sql.SQL("{}.{}").format(sql.Identifier(staging_schema), sql.Identifier(staging_tbl)),
+            cols=cols_sql,
+            pk=sql.Identifier("event_id"),
+        )
+
+        conn = psycopg2.connect(
+            host=host,
+            port=port,
+            database=database,
+            user=self.db_user,
+            password=self.db_password,
+            connect_timeout=10,
+        )
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(insert_sql)
+        finally:
+            conn.close()
 
     def run(self):
         """Run the streaming job with comprehensive monitoring and error handling."""
@@ -908,9 +1082,9 @@ class EcommerceStreamingJob:
                 
                 # Wait for query to stop
                 timeout = 30
-                start_time = datetime.utcnow()
+                start_time = datetime.now(timezone.utc)
                 
-                while query.isActive and (datetime.utcnow() - start_time).seconds < timeout:
+                while query.isActive and (datetime.now(timezone.utc) - start_time).seconds < timeout:
                     import time
                     time.sleep(1)
                 
@@ -941,7 +1115,7 @@ class EcommerceStreamingJob:
 
     def _log_final_statistics(self):
         """Log comprehensive final statistics."""
-        runtime = datetime.utcnow() - self.start_time
+        runtime = datetime.now(timezone.utc) - self.start_time
         
         stats_msg = f"""
 === SPARK STREAMING JOB FINAL STATISTICS ===

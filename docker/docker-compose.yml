@@ -45,7 +45,8 @@ services:
     container_name: ecommerce_spark_master
     environment:
       SPARK_MODE: master
-      SPARK_MASTER_HOST: 0.0.0.0
+      # Bind to all interfaces, but advertise a hostname that other containers can resolve.
+      SPARK_MASTER_HOST: spark-master
       SPARK_MASTER_PORT: 7077
       SPARK_MASTER_WEBUI_PORT: 8080
     volumes:
@@ -72,8 +73,11 @@ services:
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_CORES: 2
       SPARK_WORKER_MEMORY: 2g
+      # The apache/spark-py image runs as a non-root user; /opt/spark/work is not writable.
+      # Use a writable work directory so the worker can start.
+      SPARK_WORKER_DIR: /tmp/spark-work
     volumes:
-      - spark_worker_data:/opt/spark/data
+      - spark_worker_data:/tmp/spark-work
     networks:
       - ecommerce_network
     depends_on:
@@ -90,13 +94,15 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       SPARK_MASTER_URL: "local[*]"
-      CSV_PATH: ${CSV_PATH}
+      INPUT_DATA_DIR: "/app/data/incoming"
+      CHECKPOINT_DIR: "/app/data/checkpoints"
       LOG_LEVEL: ${LOG_LEVEL}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ../data:/app/data   # CSV folder for streaming
+      - ../logs:/app/logs   # Persist logs to host
     networks:
       - ecommerce_network
     depends_on:

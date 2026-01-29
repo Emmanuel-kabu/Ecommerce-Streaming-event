@@ -1,0 +1,126 @@
+# PostgreSQL Connection Details
+# E-commerce Streaming Analytics Platform
+
+## Database Connection Information
+
+### Primary Database
+**Host:** localhost
+**Port:** 5432
+**Database:** ecommerce_analytics
+**Username:** postgres
+**Password:** your_password_here
+
+### Connection URL Format
+postgresql://postgres:your_password_here@localhost:5432/ecommerce_analytics
+
+### Docker Container Details
+**Container Name:** ecommerce_postgresql
+**Image:** postgres:18.1
+**Network:** ecommerce_network
+
+## Environment Variables
+Set these in your .env file:
+
+```
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=ecommerce_analytics
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_password_here
+```
+
+## pgAdmin Web Interface
+**URL:** http://localhost:8080
+**Email:** admin@ecommerce.com
+**Password:** admin_password_here
+
+**Container Name:** ecommerce_pgadmin
+**Image:** dpage/pgadmin4:latest
+
+## Connection String Examples
+
+### Python (psycopg2)
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="localhost",
+    port=5432,
+    database="ecommerce_analytics",
+    user="postgres",
+    password="your_password_here"
+)
+```
+
+### Python (SQLAlchemy)
+```python
+from sqlalchemy import create_engine
+
+engine = create_engine(
+    'postgresql://postgres:your_password_here@localhost:5432/ecommerce_analytics'
+)
+```
+
+### Spark JDBC URL
+```
+jdbc:postgresql://localhost:5432/ecommerce_analytics
+```
+
+## Security Notes
+1. **NEVER** commit passwords to version control
+2. Use environment variables for sensitive data
+3. Consider using PostgreSQL connection pooling for production
+4. Enable SSL in production environments
+5. Use strong passwords and consider certificate authentication
+
+## Troubleshooting
+
+### Common Issues
+1. **Connection Refused:** Check if PostgreSQL container is running
+2. **Authentication Failed:** Verify username/password
+3. **Database Not Found:** Ensure database exists or run setup script
+4. **Port Conflicts:** Check if port 5432 is available
+
+### Health Check Commands
+```bash
+# Check if PostgreSQL is running
+docker ps | grep postgres
+
+# Test connection
+docker exec -it ecommerce_postgresql psql -U postgres -d ecommerce_analytics -c "SELECT 1;"
+
+# Check PostgreSQL logs
+docker logs ecommerce_postgresql
+```
+
+### Reset Database
+```bash
+# Stop and remove containers
+docker-compose down -v
+
+# Start fresh
+docker-compose up -d postgresql
+
+# Run setup script
+docker exec -i ecommerce_postgresql psql -U postgres < postgres_setup.sql
+```
+
+## Backup and Restore
+
+### Backup Database
+```bash
+docker exec ecommerce_postgresql pg_dump -U postgres ecommerce_analytics > backup.sql
+```
+
+### Restore Database
+```bash
+docker exec -i ecommerce_postgresql psql -U postgres ecommerce_analytics < backup.sql
+```
+
+## Production Considerations
+- Use connection pooling (PgBouncer)
+- Configure proper authentication methods
+- Set up SSL/TLS encryption
+- Implement backup strategies
+- Monitor connection limits
+- Consider read replicas for scaling

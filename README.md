@@ -53,20 +53,26 @@ A comprehensive real-time data streaming platform for e-commerce analytics using
 
 ```
 ecommerce_streaming/
-├── 📂 data_generator/          # Realistic data generation
-│   └── data_generator.py       # Main generator with comprehensive logging
-├── 📂 spark_streaming_to_postgres/  # Stream processing
-│   └── spark_to_postgres.py    # Spark job with validation & monitoring
-├── 📂 docker/                  # Container configuration
-│   ├── docker-compose.yml      # Multi-service orchestration
-│   └── Dockerfile.python       # Python application container
-├── 📂 data/                    # Data directories
-│   ├── incoming/               # Generated CSV files
-│   └── checkpoints/            # Spark checkpoints
-├── 📂 logs/                    # Application logs
-├── 📄 requirements.txt         # Python dependencies
-├── 📄 .env                     # Environment configuration
-└── 📄 README.md                # This documentation
+├── data_generator/             # CSV event generator (writes into data/incoming)
+│   └── data_generator.py
+├── spark_streaming_to_postgres/ # Spark Structured Streaming job (CSV -> Postgres)
+│   └── spark_to_postgres.py
+├── docker/                     # Docker Compose + job container
+│   ├── docker-compose.yml
+│   ├── Dockerfile.python
+│   └── .env                    # Compose environment (db creds, JDBC URL, etc.)
+├── sql_setup/                  # Optional schema / analytics setup
+│   └── postgres_setup.sql
+├── tests/                      # Test + data generation helpers
+│   ├── generate_test_data.py
+│   └── test_stream_to_postgres.py
+├── data/                       # Mounted into containers as /app/data
+│   ├── incoming/               # Drop CSVs here for the stream
+│   └── checkpoints/            # Streaming offsets / checkpoints
+├── logs/                       # Logs (mounted into spark-job as /app/logs)
+├── requirements.txt
+├── .dockerignore
+└── README.md
 ```
 
 ## 🚀 Quick Start
@@ -77,17 +83,17 @@ ecommerce_streaming/
 - **Python 3.11+** (for local development)
 - **8GB+ RAM** recommended for Spark cluster
 
+> **Windows note:** Running Spark (PySpark) directly on Windows often requires Hadoop `winutils.exe` and setting `HADOOP_HOME`/`hadoop.home.dir`. If you hit errors like “HADOOP_HOME and hadoop.home.dir are unset”, use the Docker Compose workflow below (recommended).
+
 ### 1. Clone and Setup
 
 ```bash
 git clone <your-repository>
 cd ecommerce_streaming
 
-# Copy environment configuration
-cp ../.env .env
-
-# Review and customize configuration
-nano .env
+# Review and customize Docker Compose environment
+# (this repo keeps it in docker/.env)
+notepad docker/.env
 ```
 
 ### 2. Start the Platform
@@ -95,10 +101,10 @@ nano .env
 ```bash
 # Start all services with Docker Compose
 cd docker
-docker-compose up -d
+docker compose up -d --build
 
 # Monitor service startup
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### 3. Verify Services
@@ -107,31 +113,44 @@ docker-compose logs -f
 |---------|-----|-------------|
 | **pgAdmin** | http://localhost:8080 | admin@admin.com / admin123 |
 | **Spark Master UI** | http://localhost:8081 | - |
-| **PostgreSQL** | localhost:5432 | postgres / password123 |
+| **PostgreSQL** | localhost:5432 | postgres / (see docker/.env) |
 
-### 4. Start Data Generation (Local)
+Note: inside Docker networking, services reach Postgres by host `postgresql`.
+
+### 4. Generate Input Data (Docker-only)
+
+Generate CSVs directly into `data/incoming` using a one-shot container:
 
 ```bash
-# Activate virtual environment
+cd docker
+docker compose run --rm spark-job python tests/generate_test_data.py --count 500 --batch-size 100 --out-dir data/incoming
+```
+
+Or (optional) run the continuous generator locally if you want constant file creation:
+
+```bash
 python -m venv stream_env
-source stream_env/bin/activate  # Linux/Mac
-# OR
-stream_env\Scripts\activate     # Windows
-
-# Install dependencies
+stream_env\Scripts\activate
 pip install -r requirements.txt
-
-# Start data generator
 cd data_generator
 python data_generator.py
 ```
 
-### 5. Start Spark Streaming (Local)
+### 5. Watch the Streaming Job
 
 ```bash
-# In another terminal
-cd spark_streaming_to_postgres
-python spark_to_postgres.py
+cd docker
+docker compose logs -f spark-job
+```
+
+### 5b. Start Spark Streaming (Docker - recommended on Windows)
+
+The Docker Compose stack includes a `spark-job` container that runs the streaming job inside Linux:
+
+```bash
+cd docker
+docker compose up -d --build spark-job
+docker compose logs -f spark-job
 ```
 
 ## ⚙️ Configuration
@@ -145,16 +164,13 @@ Configure the platform using environment variables in `.env`:
 POSTGRES_DB=ecommerce_db
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=password123
-DATABASE_URL=postgresql://postgres:password123@postgresql:5432/ecommerce_db
-
-# Data Generation
-DATA_GENERATION_INTERVAL=5      # Seconds between batches
-EVENTS_PER_BATCH=100           # Events per batch
-OUTPUT_DATA_DIR=data/incoming  # CSV output directory
+# Spark uses a JDBC URL for Postgres
+DATABASE_URL=jdbc:postgresql://postgresql:5432/ecommerce_db
 
 # Spark Configuration
-SPARK_MASTER_URL=spark://spark-master:7077
-CHECKPOINT_DIR=data/checkpoints
+SPARK_MASTER_URL=local[*]
+INPUT_DATA_DIR=/app/data/incoming
+CHECKPOINT_DIR=/app/data/checkpoints
 LOG_LEVEL=INFO                 # DEBUG, INFO, WARNING, ERROR
 
 # Monitoring
@@ -218,6 +234,8 @@ PRICE_RANGES = {
 #### Application Logs
 - **Data Generator**: `logs/data_generator_YYYYMMDD.log`
 - **Spark Streaming**: `logs/spark_streaming_YYYYMMDD.log`
+
+In the Docker workflow, Spark logs are written inside the container to `/app/logs` and are mounted back to the host `logs/` folder.
 
 #### Key Metrics Tracked
 - **Throughput**: Events/second, batches/minute
@@ -286,7 +304,8 @@ pip install -r requirements.txt
 2. **Database Setup**
 ```bash
 # Start only PostgreSQL for development
-docker-compose up -d postgresql pgadmin
+cd docker
+docker compose up -d postgresql pgadmin
 ```
 
 3. **Run Components Locally**
@@ -323,12 +342,10 @@ python spark_to_postgres.py
 
 #### 1. **Port Conflicts**
 ```bash
-# Check what's using ports
-netstat -tulpn | grep :5432  # PostgreSQL
-netstat -tulpn | grep :8080  # pgAdmin
-netstat -tulpn | grep :7077  # Spark Master
-
-# Change ports in docker-compose.yml if needed
+# On Windows, check whether ports are bound
+netstat -ano | findstr ":5432"  # PostgreSQL
+netstat -ano | findstr ":8080"  # pgAdmin
+netstat -ano | findstr ":7077"  # Spark Master
 ```
 
 #### 2. **Memory Issues**
@@ -343,7 +360,8 @@ EVENTS_PER_BATCH=50
 #### 3. **Database Connection Issues**
 ```bash
 # Check PostgreSQL logs
-docker-compose logs postgresql
+cd docker
+docker compose logs postgresql
 
 # Verify connection
 docker exec -it ecommerce_postgresql psql -U postgres -d ecommerce_db
